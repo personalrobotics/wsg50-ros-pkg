@@ -87,6 +87,10 @@ add_executable(test_finger_read src/test_finger_read.cpp ${DRIVER_SOURCES})
 target_link_libraries(test_finger_read hand_lib optical_weiss_finger_lib fmf_weiss_finger_lib ${catkin_LIBRARIES})
 add_dependencies(test_finger_read wsg_50_common_generate_messages_cpp)
 
+add_executable(test_finger_calibrate src/test_finger_calibrate.cpp ${DRIVER_SOURCES})
+target_link_libraries(test_finger_calibrate hand_lib optical_weiss_finger_lib fmf_weiss_finger_lib ${catkin_LIBRARIES})
+add_dependencies(test_finger_calibrate wsg_50_common_generate_messages_cpp)
+
 install(DIRECTORY include/wsg_50}/
   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
   FILES_MATCHING PATTERN "*.h"

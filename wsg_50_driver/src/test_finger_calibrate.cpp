@@ -234,6 +234,13 @@ int main(int argc, char** argv) {
 
 
     Hand hand(&hand_params, finger0_params, finger1_params);
+
+    hand.do_calibration(0);
+    hand.do_calibration(1);
+
+    hand.load_calibration(0);
+    hand.load_calibration(1);
+
     hand.start_reading();
     hand.pause_hand_reading();
     hand.pause_finger_reading(1);
@@ -265,3 +272,4 @@ int main(int argc, char** argv) {
         delete finger1_params;
     }
 }
+

@@ -1,16 +1,57 @@
 #ifndef WEISS_FINGER_H
 #define WEISS_FINGER_H
 
-#include <mutex>
-#include "wsg_50_common/WeissFingerData.h"
+#ifndef HAS_CLOCK_GETTIME
+#define HAS_CLOCK_GETTIME (_POSIX_C_SOURCE >= 199309L)
+#endif
 
+#include <mutex>
+#include <ctime>
+#include <vector>
 /**
  * @brief WeissFinger: Abstract class that all fingers should implement
 */
 class WeissFinger {
 public:
+
     /**
-     * @brief WeissFinger: Contrstructs the Weiss Finger
+     * @brief weiss_finger_params_t: Parameters for initializing a Weiss Finger
+    **/
+    struct weiss_finger_params_t{
+        unsigned int finger_id; // The id of the finger
+        double finger_read_rate; // The rate at which to read data from the finger
+        int finger_data_buffer_size;
+
+    };
+
+    /**
+      * @brief weiss_finger_data_t: Data from the Weiss Finger
+    **/
+    struct weiss_finger_data_t {
+        timespec stamp;
+        std::vector<float> data;
+        std::vector<int> data_shape;
+
+        /**
+         * @brief get_stamp: Get the current time
+         * @return A timespec that describes the current time
+        */
+        static timespec get_stamp() {
+            timespec stamp;
+            #if HAS_CLOCK_GETTIME
+            clock_gettime(CLOCK_REALTIME, &stamp);
+            #else
+            struct timeval timeofday;
+            gettimeofday(&timeofday,NULL);
+            stamp.tv_sec = timeofday.tv_sec;
+            stamp.tv_nsec = timeofday.tv_usec * 1000;
+            #endif
+            return stamp;
+        }
+    };
+
+    /**
+     * @brief WeissFinger: Constructs the Weiss Finger
     */
     WeissFinger() {}
 
@@ -64,7 +105,7 @@ public:
      * @brief get_sample: Get the latest data sample
      * @return The latest data sample
     */
-    virtual wsg_50_common::WeissFingerData get_sample() = 0;
+    virtual weiss_finger_data_t get_sample() = 0;
 
     /**
      * @brief get_latest_samples: Get the most recent n samples, ordered from newest to oldest
@@ -72,7 +113,7 @@ public:
      * @param buff: Container for the n samples
      * @return True if at least one sample was returned, otherwise False
     */
-    virtual bool get_latest_samples(unsigned int n_msgs, std::vector<wsg_50_common::WeissFingerData>& buff)=0;
+    virtual bool get_latest_samples(unsigned int n_msgs, std::vector<weiss_finger_data_t>& buff)=0;
 };
 
 #endif // WEISS_FINGER_H

@@ -1,18 +1,23 @@
-#include <ros/ros.h>
 #include <limits>
+#include <unistd.h>
+#include <iostream>
+#include <stdio.h>
+#include <cmath>
+#include <string.h>
 #include "wsg_50/hand.h"
 #include "wsg_50/msg.h"
 #include "wsg_50/functions.h"
 #include "wsg_50/cmd.h"
-#include "wsg_50/optical_weiss_finger.h"
-#include "wsg_50/fmf_weiss_finger.h"
 
 /**
  * @brief Hand: Constructor
- * @param nh: Node handle for grabbing params
- * @param param_prefix: Prefix for param keys
+ * @param hand_params: Struct containing hand initialization params
+ * @param finger0_params: Struct containing finger0 initialization params
+ * @param finger1_params: Struct containing finger1 initialization params
 */
-Hand::Hand(ros::NodeHandle& nh, std::string param_prefix):
+Hand::Hand(hand_params_t *hand_params,
+           WeissFinger::weiss_finger_params_t *finger0_params,
+           WeissFinger::weiss_finger_params_t *finger1_params):
                                                            initialized_(false),
                                                            cmd_mutex_(),
                                                            cmd_lock_(cmd_mutex_, std::defer_lock),
@@ -26,42 +31,16 @@ Hand::Hand(ros::NodeHandle& nh, std::string param_prefix):
 
     // Get parameters for basic operation
     // Should be specified in handX.yaml
-    std::string ip("");
-    int port, local_port;
-    bool use_tcp;
-    std::string finger0_type, finger1_type;
-    if(!nh.getParam(param_prefix+"/ip", ip)) {
-        ROS_ERROR("Did not get hand ip, aborting");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/port", port)) {
-        ROS_ERROR("Did not get hand port, aborting");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/local_port", local_port)) {
-        ROS_ERROR("Did not get hand local port, aborting");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/use_tcp", use_tcp)) {
-        ROS_ERROR("Did not get hand comm method, aborting");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/finger0_type", finger0_type)) {
-        ROS_ERROR("Did not get type of finger 0, aborting");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/finger1_type", finger1_type)) {
-        ROS_ERROR("Did not get type of finger 1, aborting");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/buffer_size_hand_state", hand_state_buffer_max_size_)) {
-        ROS_ERROR("Did not get hand state buffer max size, aborting");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/hand_read_rate", hand_read_rate_)) {
-        ROS_ERROR("Did not get hand read rate, aborting");
-        return;
-    }
+    std::string ip(hand_params->ip);
+    int port = hand_params->port;
+    int local_port = hand_params->local_port;
+    bool use_tcp = hand_params->use_tcp;
+
+    std::string finger0_type(hand_params->finger0_type);
+    std::string finger1_type(hand_params->finger1_type);
+
+    hand_data_buffer_size_ = hand_params->hand_data_buffer_size;
+    hand_read_rate_ = hand_params->hand_read_rate;
 
     // Setup connection to hand
     int res_con;
@@ -72,42 +51,37 @@ Hand::Hand(ros::NodeHandle& nh, std::string param_prefix):
     }
 
     if (res_con == 0 ) {
-         ROS_INFO("Gripper connection stablished");
-
-         ROS_INFO("Ready to use. Homing and taring now...");
          homing();
-         ros::Duration(0.5).sleep();
+         sleep(1);
          //doTare();
 
+         std::cout << "[weiss_hand] Setting up fingers" << std::endl;
+
          // Configure the fingers
-         if(finger0_type.compare("optical") == 0) {
-             ROS_INFO("Preparing finger 0 as an optical sensor");
-             finger0_ = new OpticalWeissFinger(nh, param_prefix+"/finger0");
-         } else if(finger0_type.compare("fmf") == 0) {
-             ROS_INFO("Preparing finger 0 as an fmf sensor");
-             finger0_ = new FMFWeissFinger(nh, param_prefix+"/finger0");
-         } else if(finger0_type.compare("dsa") == 0) {
-             ROS_ERROR("DSA finger not implemented, finger 0 will not be active");
+         if(finger0_type.compare("optical") == 0 && finger0_params != NULL) {
+             finger0_ = new OpticalWeissFinger((OpticalWeissFinger::optical_weiss_finger_params_t*)finger0_params);
+         } else if(finger0_type.compare("fmf") == 0 && finger0_params != NULL) {
+             finger0_ = new FMFWeissFinger((FMFWeissFinger::fmf_weiss_finger_params_t*)finger0_params);
+         } else if(finger0_type.compare("dsa") == 0 && finger0_params != NULL) {
+             std::cout << "[weiss_hand] DSA Not implemented" << std::endl;
          } else {
-             ROS_INFO("Finger 0 is not active");
+             std::cout << "[weiss_hand] Finger 0 not active" << std::endl;
          }
 
-         if(finger1_type.compare("optical") == 0) {
-             ROS_INFO("Preparing finger 1 as an optical sensor");
-             finger1_ = new OpticalWeissFinger(nh, param_prefix+"/finger1");
-         } else if(finger1_type.compare("fmf") == 0) {
-             ROS_INFO("Preparing finger 1 as an fmf sensor");
-             finger1_ = new FMFWeissFinger(nh, param_prefix+"/finger1");
-         } else if(finger1_type.compare("dsa") == 0) {
-             ROS_ERROR("DSA finger not implemented, finger 1 will not be active");
+         if(finger1_type.compare("optical") == 0 && finger1_params != NULL) {
+             finger1_ = new OpticalWeissFinger((OpticalWeissFinger::optical_weiss_finger_params_t*)finger1_params);
+         } else if(finger1_type.compare("fmf") == 0 && finger1_params != NULL) {
+             finger1_ = new FMFWeissFinger((FMFWeissFinger::fmf_weiss_finger_params_t*)finger1_params);
+         } else if(finger1_type.compare("dsa") == 0 && finger1_params != NULL) {
+             std::cout << "[weiss_hand] DSA Not implemented" << std::endl;
          } else {
-             ROS_INFO("Finger 1 will not be active");
+             std::cout << "[weiss_hand] Finger 1 not active" << std::endl;
          }
 
          initialized_ = true;
 
      } else {
-         ROS_ERROR("Unable to connect, please check the port and address used.");
+         std::cout << "[weiss_hand] Failed to initialize" << std::endl;
      }
 
 }
@@ -143,7 +117,7 @@ Hand::~Hand() {
 */
 bool Hand::do_calibration(unsigned int finger_id) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting calibration");
+        std::cout << "[weiss_hand] Not properly initialized, aborting calibration " << std::endl;
         return false;
     }
 
@@ -153,14 +127,14 @@ bool Hand::do_calibration(unsigned int finger_id) {
     } else if(finger_id == 1) {
         finger = finger1_;
     } else {
-        ROS_ERROR("Finger id must be 0 or 1, aborting calibration");
+        std::cout << "[weiss_hand] Finger id must be 0 or 1, aborting calibration" << std::endl;
         return false;
     }
 
     if(finger) {
         finger->do_calibration(&cmd_mutex_);
     } else {
-        ROS_ERROR("Finger %d is not active", finger_id);
+        std::cout << "[weiss_hand] Finger " << finger_id << " is not active" << std::endl;
         return false;
     }
 
@@ -174,7 +148,7 @@ bool Hand::do_calibration(unsigned int finger_id) {
 */
 bool Hand::load_calibration(unsigned int finger_id) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting calibration load");
+        std::cout << "[weiss_hand] Not properly initialized, aborting calibration load" << std::endl;
         return false;
     }
 
@@ -184,14 +158,14 @@ bool Hand::load_calibration(unsigned int finger_id) {
     } else if(finger_id == 1) {
         finger = finger1_;
     } else {
-        ROS_ERROR("Finger id must be 0 or 1, aborting calibration");
+        std::cout << "[weiss_hand] Finger id must be 0 or 1, aborting calibration" << std::endl;
         return false;
     }
 
     if(finger) {
         finger->load_calibration(&cmd_mutex_);
     } else {
-        ROS_ERROR("Finger %d is not active", finger_id);
+        std::cout << "[weiss_hand] Finger " << finger_id << " is not active" << std::endl;
         return false;
     }
 
@@ -204,7 +178,7 @@ bool Hand::load_calibration(unsigned int finger_id) {
 */
 bool Hand::start_reading() {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting read commencement");
+        std::cout << "[weiss_hand] Not properly initialized, aborting read commencement" << std::endl;
         return false;
     }
 
@@ -215,13 +189,13 @@ bool Hand::start_reading() {
 
     // Start reading from the fingers
     bool success = true;
-    ROS_INFO("Going to start reading finger 0");
+    std::cout << "[weiss_hand] Going to start reading finger 0" << std::endl;
     if(finger0_) {
         if(!finger0_->start_reading(&cmd_mutex_)) {
             success = false;
         }
     }
-    ROS_INFO("Going to start reading finger 1");
+    std::cout << "[weiss_hand] Going to start reading finger 1" << std::endl;
     if(finger1_) {
         if(!finger1_->start_reading(&cmd_mutex_)) {
             success = false;
@@ -237,7 +211,7 @@ bool Hand::start_reading() {
 */
 bool Hand::pause_hand_reading() {
   if(!initialized_) {
-    ROS_ERROR("Not properly initialized, aborting pause");
+    std::cout << "[weiss_hand] Not properly initialized, aborting pause" << std::endl;
     return false;
   }
   hand_reading_paused_ = true;
@@ -250,11 +224,11 @@ bool Hand::pause_hand_reading() {
 */
 bool Hand::restart_hand_reading() {
   if(!initialized_) {
-    ROS_ERROR("Not properly initialized, aborting read restart");
+    std::cout << "[weiss_hand] Not properly initialized, aborting read restart" << std::endl;
     return false;
   }
   if(!read_hand_alive_) {
-    ROS_ERROR("Hand reading never started, call start reading first, abort");
+    std::cout << "[weiss_hand] Hand reading never started, call start reading first, abort" << std::endl;
     return false;
   }
   hand_reading_paused_ = false;
@@ -268,7 +242,7 @@ bool Hand::restart_hand_reading() {
 */
 bool Hand::pause_finger_reading(unsigned int finger_id) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting finger pause");
+        std::cout << "[weiss_hand] Not properly initialized, aborting finger pause" << std::endl;
         return false;
     }
 
@@ -278,14 +252,14 @@ bool Hand::pause_finger_reading(unsigned int finger_id) {
     } else if(finger_id == 1) {
         finger = finger1_;
     } else {
-        ROS_ERROR("Finger id must be 0 or 1, aborting finger pause");
+        std::cout << "[weiss_hand] Finger id must be 0 or 1, aborting finger pause" << std::endl;
         return false;
     }
 
     if(finger) {
         return finger->pause_reading();
     } else {
-        ROS_ERROR("Finger %d is not active", finger_id);
+        std::cout << "[weiss_hand] Finger " << finger_id << " is not active";
         return false;
     }
 
@@ -299,7 +273,7 @@ bool Hand::pause_finger_reading(unsigned int finger_id) {
 */
 bool Hand::restart_finger_reading(unsigned int finger_id) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting finger restart");
+        std::cout << "[weiss_hand] Not properly initialized, aborting finger restart" << std::endl;
         return false;
     }
 
@@ -309,14 +283,14 @@ bool Hand::restart_finger_reading(unsigned int finger_id) {
     } else if(finger_id == 1) {
         finger = finger1_;
     } else {
-        ROS_ERROR("Finger id must be 0 or 1, aborting finger restart");
+        std::cout << "[weiss_hand] Finger id must be 0 or 1, aborting finger restart" << std::endl;
         return false;
     }
 
     if(finger) {
         return finger->restart_reading();
     } else {
-        ROS_ERROR("Finger %d is not active", finger_id);
+        std::cout << "[weiss_hand] Finger " << finger_id << " is not active" << std::endl;
         return false;
     }
 
@@ -333,18 +307,17 @@ bool Hand::restart_finger_reading(unsigned int finger_id) {
 */
 bool Hand::move_hand(float width, float speed, bool ignore_response) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting hand movement");
+        std::cout << "[weiss_hand] Not properly initialized, aborting hand movement" << std::endl;
         return false;
     }
     int res;
     if ( (width >= 0.0 && width <= 110.0) && (speed > 0.0 && speed <= 420.0) ){
 
     }else if (width < 0.0 || width > 110.0){
-        ROS_ERROR("Imposible to move to this position. (Width values: [0.0 - 110.0] ");
+        std::cout << "[weiss_hand] Imposible to move to this position. (Width values: [0.0 - 110.0] " << std::endl;
         return false;
     }else{
-        ROS_WARN("Speed values are outside the gripper's physical limits ([0.1 - 420.0])  Using clamped values.");
-        //std::lock_guard<std::mutex> cmd_lock(cmd_mutex_);
+        std::cout << "[weiss_hand] Speed values are outside the gripper's physical limits ([0.1 - 420.0])  Using clamped values." << std::endl;
 
     }
 
@@ -383,9 +356,9 @@ bool Hand::hand_is_moving() {
 
   while(hand_state_buffer_.size() <= 0); // Wait until there is hand data
 
-  wsg_50_common::Status hand_state;
+  hand_data_t hand_state;
   while(!get_hand_state(hand_state)) { // Wait until we get hand data
-    ros::Duration(0.1).sleep();
+    usleep(100000);
   }
 
   return std::abs(hand_state.speed) > Hand::NOT_MOVING_SPEED_THRESH;
@@ -399,7 +372,7 @@ bool Hand::hand_is_moving() {
 bool Hand::stop_hand() {
 
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting hand movement");
+        std::cout << "[weiss_hand] Not properly initialized, will not stop hand movement" << std::endl;
         return false;
     }
     //std::lock_guard<std::mutex> cmd_lock(cmd_mutex_);
@@ -422,7 +395,7 @@ bool Hand::stop_hand() {
 */
 bool Hand::clear_hand_state_buffer() {
   if(!initialized_) {
-      ROS_ERROR("Not properly initialized, abort");
+      std::cout << "[weiss_hand] Not properly initialized, abort" << std::endl;
       return false;
   }
   std::lock_guard<std::mutex> buffer_lock(hand_state_buffer_mutex_); // Will be released upon losing scope
@@ -434,15 +407,15 @@ bool Hand::clear_hand_state_buffer() {
  * @brief get_hand_state: Get the latest hand state
  * @return  The latest hand state
 */
-bool Hand::get_hand_state(wsg_50_common::Status& hand_state) {
+bool Hand::get_hand_state(hand_data_t &hand_state) {
 
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting hand state");
+        std::cout << "[weiss_hand] Not properly initialized, aborting hand state" << std::endl;
         return false;
     }
 
     if(hand_state_buffer_.size() <= 0) {
-        ROS_ERROR("Hand data buffer is empty");
+        std::cout << "[weiss_hand] Hand data buffer is empty" << std::endl;
         return false;
     }
     std::lock_guard<std::mutex> hand_state_lock(hand_state_buffer_mutex_); // Will be released upon losing scope
@@ -455,18 +428,18 @@ bool Hand::get_hand_state(wsg_50_common::Status& hand_state) {
  * @param hand_state: Container for the latest hand state
  * @return  Whether the latest hand state was retrieved
 */
-wsg_50_common::Status Hand::get_hand_state() {
+Hand::hand_data_t Hand::get_hand_state() {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting hand state");
-        return wsg_50_common::Status();;
+        std::cout << "[weiss_hand] Not properly initialized, aborting get hand state" << std::endl;
+        return hand_data_t();
     }
 
     if(hand_state_buffer_.size() <= 0) {
-        ROS_ERROR("Hand data buffer is empty");
-        return wsg_50_common::Status();
+        std::cout << "[weiss_hand] Hand data buffer is empty" << std::endl;
+        return hand_data_t();
     }
     std::lock_guard<std::mutex> hand_state_lock(hand_state_buffer_mutex_); // Will be released upon losing scope
-    wsg_50_common::Status result = hand_state_buffer_[0];
+    hand_data_t result = hand_state_buffer_[0];
     return result;
 }
 
@@ -476,14 +449,14 @@ wsg_50_common::Status Hand::get_hand_state() {
  * @param buff: Container for the n samples
  * @return True if at least one samples was returned, otherwise False
 */
-bool Hand::get_latest_hand_states(unsigned int n_msgs, std::vector<wsg_50_common::Status>& buff) {
+bool Hand::get_latest_hand_states(unsigned int n_msgs, std::vector<hand_data_t> &buff) {
   if(!initialized_) {
-      ROS_ERROR("Not properly initialized, abort");
+      std::cout << "[weiss_hand] Not properly initialized, abort" << std::endl;
       return false;
   }
   std::lock_guard<std::mutex> buffer_lock(hand_state_buffer_mutex_); // Will be released upon losing scope
   if(hand_state_buffer_.size() <= 0) {
-      ROS_ERROR("Finger data buffer is empty");
+      std::cout << "[weiss_hand] Hand data buffer is empty" << std::endl;
       return false;
   }
   if(n_msgs <= 0) {
@@ -491,7 +464,7 @@ bool Hand::get_latest_hand_states(unsigned int n_msgs, std::vector<wsg_50_common
   }
 
   if(n_msgs > hand_state_buffer_.size()) {
-    ROS_WARN("Requested %u messages, but only returning %lu latest", n_msgs, hand_state_buffer_.size());
+    std::cout << "[weiss_hand] Requested " << n_msgs <<" messages, but only returning " << hand_state_buffer_.size() << " latest" << std::endl;
     n_msgs = hand_state_buffer_.size();
   }
 
@@ -510,7 +483,7 @@ bool Hand::get_latest_hand_states(unsigned int n_msgs, std::vector<wsg_50_common
 */
 bool Hand::clear_finger_sample_buffer(unsigned int finger_id) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting finger buffer clear");
+        std::cout << "[weiss_hand] Not properly initialized, aborting finger buffer clear" << std::endl;
         return false;
     }
 
@@ -520,14 +493,14 @@ bool Hand::clear_finger_sample_buffer(unsigned int finger_id) {
     } else if(finger_id == 1) {
         finger = finger1_;
     } else {
-        ROS_ERROR("Finger id must be 0 or 1, aborting finger buffer clear");
+        std::cout << "[weiss_hand] Finger id must be 0 or 1, aborting finger buffer clear" << std::endl;
         return false;
     }
 
     if(finger) {
         return finger->clear_sample_buffer();
     } else {
-        ROS_ERROR("Finger %d is not active", finger_id);
+        std::cout << "[weiss_hand] Finger " << finger_id << " is not active" << std::endl;
         return false;
     }
 }
@@ -537,10 +510,10 @@ bool Hand::clear_finger_sample_buffer(unsigned int finger_id) {
  * @param: Id of the finger to get a sample from
  * @return The latest data sample from the finger
 */
-wsg_50_common::WeissFingerData Hand::get_finger_sample(unsigned int finger_id) {
+WeissFinger::weiss_finger_data_t Hand::get_finger_sample(unsigned int finger_id) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting finger sample");
-        return wsg_50_common::WeissFingerData();
+        std::cout << "[weiss_hand] Not properly initialized, aborting finger sample" << std::endl;
+        return WeissFinger::weiss_finger_data_t();
     }
 
     WeissFinger* finger;
@@ -549,15 +522,15 @@ wsg_50_common::WeissFingerData Hand::get_finger_sample(unsigned int finger_id) {
     } else if(finger_id == 1) {
         finger = finger1_;
     } else {
-        ROS_ERROR("Finger id must be 0 or 1, aborting finger sample");
-        return wsg_50_common::WeissFingerData();
+        std::cout << "[weiss_hand] Finger id must be 0 or 1, aborting finger sample" << std::endl;
+        return WeissFinger::weiss_finger_data_t();
     }
 
     if(finger) {
         return finger->get_sample();
     } else {
-        ROS_ERROR("Finger %d is not active", finger_id);
-        return wsg_50_common::WeissFingerData();
+        std::cout << "[weiss_hand] Finger " << finger_id << " is not active" << std::endl;
+        return WeissFinger::weiss_finger_data_t();
     }
 }
 
@@ -568,9 +541,9 @@ wsg_50_common::WeissFingerData Hand::get_finger_sample(unsigned int finger_id) {
  * @param buff: Container for the n samples
  * @return True if at least one sample was returned, otherwise False
 */
-bool Hand::get_latest_finger_samples(unsigned int finger_id, unsigned int n_msgs, std::vector<wsg_50_common::WeissFingerData>& buff) {
+bool Hand::get_latest_finger_samples(unsigned int finger_id, unsigned int n_msgs, std::vector<WeissFinger::weiss_finger_data_t>& buff) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, aborting finger sample");
+        std::cout << "[weiss_hand] Not properly initialized, aborting finger sample" << std::endl;
         return false;
     }
 
@@ -580,14 +553,14 @@ bool Hand::get_latest_finger_samples(unsigned int finger_id, unsigned int n_msgs
     } else if(finger_id == 1) {
         finger = finger1_;
     } else {
-        ROS_ERROR("Finger id must be 0 or 1, aborting finger sample");
+        std::cout << "[weiss_hand] Finger id must be 0 or 1, aborting finger sample" << std::endl;
         return false;
     }
 
     if(finger) {
         return finger->get_latest_samples(n_msgs, buff);
     } else {
-        ROS_ERROR("Finger %d is not active", finger_id);
+        std::cout << "[weiss_hand] Finger " << finger_id << " is not active" << std::endl;
         return false;
     }
 }
@@ -597,23 +570,24 @@ bool Hand::get_latest_finger_samples(unsigned int finger_id, unsigned int n_msgs
 */
 void Hand::read_hand_state() {
 
-    ROS_INFO("Hand state thread started");
+    std::cout << "[weiss_hand] Hand state thread started" << std::endl;
 
     // Prepare messages
-    wsg_50_common::Status status_msg;
+    hand_data_t status_msg;
     status_msg.status = "UNKNOWN";
 
     std::unique_lock<std::mutex> thread_cmd_lock(cmd_mutex_, std::defer_lock);
 
-    ros::Rate rate(hand_read_rate_);
-    while (ros::ok() && read_hand_alive_) {
+    double hand_read_period = 1.0/hand_read_rate_;
+    while (read_hand_alive_) {
+        timespec start = hand_data_t::get_stamp();
         if(!hand_reading_paused_) { // Check if we are paused
           {
               //std::lock_guard<std::mutex> cmd_lock(cmd_mutex_);
               while(!thread_cmd_lock.owns_lock()) {
                 thread_cmd_lock.try_lock();
               }
-              status_msg.stamp = ros::Time::now();
+              status_msg.stamp = hand_data_t::get_stamp();
               status_msg.width = getOpening();
               status_msg.speed = getSpeed();
               status_msg.force = getForce();
@@ -622,92 +596,22 @@ void Hand::read_hand_state() {
           {
               std::lock_guard<std::mutex> hand_state_lock(hand_state_buffer_mutex_); // Will be released upon losing scope
               hand_state_buffer_.push_front(status_msg);
-              while(hand_state_buffer_.size() > hand_state_buffer_max_size_) {
+              while(hand_state_buffer_.size() > hand_data_buffer_size_) {
                   hand_state_buffer_.pop_back();
               }
           }
         }
-        rate.sleep();
+
+        timespec end = hand_data_t::get_stamp();
+        long int sleep_length_us = (long int) (1000000 * hand_read_period - ((end.tv_sec + end.tv_nsec/1000000000.0) - (start.tv_sec + start.tv_nsec/1000000000.0)));
+        if(sleep_length_us > 0) {
+            usleep(sleep_length_us);
+        }
 
     }
 
     // Disable automatic updates
 
 
-    ROS_INFO("Hand state thread ended");
-}
-
-#include <iostream>
-#include <fstream>
-int main(int argc, char** argv) {
-
-    ros::init(argc, argv, "test_hand");
-    ros::NodeHandle nh;
-
-    Hand hand(nh, "hand0");
-
-    //hand.do_calibration(0);
-    //hand.do_calibration(1);
-
-    hand.load_calibration(0);
-    hand.load_calibration(1);
-
-    bool reading = hand.start_reading();
-    ROS_INFO("Hand is ready: %d", reading);
-    ros::Duration(1.0).sleep();
-
-    /*
-    ROS_INFO("Telling the hand to move...");
-    hand.move_hand(10,50,true);
-    ROS_INFO("...returned");
-
-
-    hand.clear_hand_state_buffer();
-    ros::Duration(0.25).sleep();
-    while(hand.hand_is_moving()){
-      std::cout << "Hand is moving" << std::endl;
-      ros::Duration(0.1).sleep();
-    }
-    std::cout << "Hand has finished moving" << std::endl;
-    */
-    ros::Rate rate(30);
-    while(ros::ok()) {
-
-
-      wsg_50_common::WeissFingerData finger0_sample = hand.get_finger_sample(0);
-
-      ROS_INFO("Range %d, intensity %d",
-                 (int)finger0_sample.data[7*finger0_sample.data_shape[1]+0],
-                 (int)finger0_sample.data[7*finger0_sample.data_shape[1]+1]);
-
-  /*
-        unsigned int dev_idx = 7;
-        wsg_50_common::Status hand_status = hand.get_hand_state();
-        wsg_50_common::WeissFingerData finger0_sample = hand.get_finger_sample(0);
-        wsg_50_common::WeissFingerData finger1_sample = hand.get_finger_sample(1);
-
-        //ROS_INFO("Hand status: Pos %f, Speed %f, Force %f", hand_status.width, hand_status.speed, hand_status.force);
-
-        if(finger0_sample.data_shape.size() >= 2 && finger0_sample.data.size() > dev_idx*finger0_sample.data_shape[1]+4) {
-          ROS_INFO("Range %d, Return Rate %d, Ref Rate %d, Amb Count %d, Ambient Light %d",
-                 (int)finger0_sample.data[dev_idx*finger0_sample.data_shape[1]+0],
-                 (int)finger0_sample.data[dev_idx*finger0_sample.data_shape[1]+1],
-                 (int)finger0_sample.data[dev_idx*finger0_sample.data_shape[1]+2],
-                 (int)finger0_sample.data[dev_idx*finger0_sample.data_shape[1]+3],
-                 (int)finger0_sample.data[dev_idx*finger0_sample.data_shape[1]+4]);
-        }
-
-        if(finger1_sample.data_shape.size() >= 2 && finger1_sample.data.size() > dev_idx*finger1_sample.data_shape[1]+4) {
-          ROS_WARN("Range %d, Return Rate %d, Ref Rate %d, Amb Count %d, Ambient Light %d",
-                 (int)finger1_sample.data[dev_idx*finger1_sample.data_shape[1]+0],
-                 (int)finger1_sample.data[dev_idx*finger1_sample.data_shape[1]+1],
-                 (int)finger1_sample.data[dev_idx*finger1_sample.data_shape[1]+2],
-                 (int)finger1_sample.data[dev_idx*finger1_sample.data_shape[1]+3],
-                 (int)finger1_sample.data[dev_idx*finger1_sample.data_shape[1]+4]);
-        }
-        */
-        rate.sleep();
-    }
-
-
+    std::cout <<"[weiss_hand] Hand state thread ended" << std::endl;
 }

@@ -6,11 +6,7 @@
 #include <mutex>
 #include <thread>
 #include <deque>
-#include "ros/ros.h"
 #include "wsg_50/weiss_finger.h"
-
-// The default movement speed in mm/sec
-#define DEFAULT_MOVE_SPEED_MM_PER_SEC 30
 
 /**
  * @brief The OpticalWeissFinger class
@@ -22,11 +18,31 @@ public:
     static const unsigned char FINGER_CMD_ID = 0xB3;
 
     /**
-     * @brief OpticalWeissFinger: Constructor
-     * @param nh: Node handle for grabbing params
-     * @param param_prefix: Prefix for param keys
+     * @brief Parameters for initializing an Optical Weiss Finger
     */
-    OpticalWeissFinger(ros::NodeHandle& nh, std::string param_prefix);
+    struct optical_weiss_finger_params_t: WeissFinger::weiss_finger_params_t{
+        unsigned int devices; // The number of addressable devices in the finger
+        std::string reg_addrs; // The register addresses to access. Each address specified in hex
+                               // Each address separated by a space
+        std::string reg_lengths; // The length of each of the above registers. Length specified in hex
+                                 // Each length separated by a space
+        double sensor_to_surface_mm; // The distance in mm from the sensor device to the top surface
+        double target_surface_offset_mm; // The distance in mm from the flat surface of the calibration
+                                         // finger to the surface to the calibration target
+        std::string calibration_path; // The file location of the calibration file
+        int calib_see_through_samples; // The number of samples to take during see through calibration
+        int calib_see_through_target; // The target distance during see through calibration
+        int calib_offset_samples; // The number of samples to take during offset calibration
+        int calib_offset_target; // The target distance during offset calibration
+        int calib_cross_talk_samples; // The number of samples to take during cross talk calibration
+        int calib_cross_talk_target; // The target distance during cross talk calibration
+    };
+
+    /**
+     * @brief OpticalWeissFinger: Constructor
+     * @param finger_params: Struct containing finger initialization params
+    */
+    OpticalWeissFinger(optical_weiss_finger_params_t* finger_params);
 
     /**
      * @brief ~FMFWeissFinger: Destructor
@@ -78,7 +94,7 @@ public:
      * @brief get_sample: Get the latest data sample
      * @return The latest data sample
     */
-    wsg_50_common::WeissFingerData get_sample();
+    weiss_finger_data_t get_sample();
 
     /**
      * @brief get_latest_samples: Get the most recent n samples, ordered from newest to oldest
@@ -86,7 +102,7 @@ public:
      * @param buff: Container for the n samples
      * @return True if at least one sample was returned, otherwise False
     */
-    bool get_latest_samples(unsigned int n_msgs, std::vector<wsg_50_common::WeissFingerData>& buff);
+    bool get_latest_samples(unsigned int n_msgs, std::vector<weiss_finger_data_t>& buff);
 
     /**
      * @brief hand_width_to_finger_tip_separation: Computes the distance from this finger to the target on
@@ -97,22 +113,23 @@ public:
     double hand_width_to_finger_tip_separation(double width);
 private:
 
-    ros::NodeHandle nh_; // Node handle used to create publisher of data
+    // The default movement speed in mm/sec
+    static const int DEFAULT_MOVE_SPEED_MM_PER_SEC = 30;
+
     bool initialized_; // Status flag, indicates if object has been initialized
     bool can_calibrate_; // Status flag, indicates if object is able to perform calibration
-    std::deque<wsg_50_common::WeissFingerData> data_buff_; // Contains the most recent data samples
+    std::deque<weiss_finger_data_t> data_buff_; // Contains the most recent data samples
     std::mutex data_buffer_mutex_; // Mutex that controls access to data_buff_
     std::thread* read_finger_thread_; // Thread for reading data from the finger
     bool read_finger_alive_; // Once thread has started, will shutdown if this is false
     bool paused_; // Indicates if data is being read from the finger
-    std::string pub_topic_; // Topic to publish data to
 
     unsigned int finger_id_; // The id of this finger. Should be 0 or 1
     unsigned int devices_; // The number of optical sensors that this finger contains
     std::vector<uint16_t> reg_addrs_; // Addresses of the optical sensor registers to read
     std::vector<uint8_t> reg_lengths_; // Lengths of the optical sensor registers to read
     double finger_read_rate_; // The rate at which data from the finger should be read
-    int data_buff_max_size_; // The maximum size of the data buffer
+    int finger_data_buffer_size_; // The maximum size of the data buffer
     double sensor_to_surface_mm_; // The distance between the top of the optical sensor and the surface of the finger
     double target_surface_offset_mm_; // The offset of the target (during calibration) from the surface of the other finger
     std::string calibration_path_; // The file to load/save calibration from/to
@@ -307,9 +324,9 @@ private:
      * @param stamp: The stamp to use for the returned message, defaults to the time at which function was called
      * @return Message with data read from the hand
     */
-    static  wsg_50_common::WeissFingerData cmd_response_to_msg(unsigned char* resp, unsigned int resp_len,
-                                                               unsigned int devices, std::vector<uint8_t>& reg_lengths,
-                                                               ros::Time stamp=ros::Time::now());
+    static  weiss_finger_data_t cmd_response_to_msg(unsigned char* resp, unsigned int resp_len,
+                                                    unsigned int devices, std::vector<uint8_t>& reg_lengths,
+                                                    timespec* stamp=NULL);
 
     /**
      * @brief open_cal_data: Load calibration data from file

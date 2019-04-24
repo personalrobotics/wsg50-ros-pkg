@@ -5,6 +5,10 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <unistd.h>
+#include <ctime>
+#include <iterator>
+#include <algorithm>
 
 #define CMD_SET_REG 0 // SPI command to set which register of optical sensor to read from.
 #define CMD_ADD_REG 1 // SPI command to add a register of optical sensor to read
@@ -34,144 +38,77 @@ std::string hex_val_to_str(unsigned int val);
 
 /**
  * @brief OpticalWeissFinger: Constructor
- * @param nh: Node handle for grabbing params
- * @param param_prefix: Prefix for param keys
+ * @param finger_params: Struct containing finger initialization params
 */
-OpticalWeissFinger::OpticalWeissFinger(ros::NodeHandle& nh, std::string param_prefix):
-                                                                                        nh_(nh),
+OpticalWeissFinger::OpticalWeissFinger(optical_weiss_finger_params_t *finger_params):
                                                                                         initialized_(false),
                                                                                         can_calibrate_(false),
                                                                                         data_buff_(0),
                                                                                         read_finger_thread_(NULL),
                                                                                         read_finger_alive_(false),
-                                                                                        paused_(true),
-                                                                                        pub_topic_(""){
+                                                                                        paused_(true){
+    // Abort if no params given
+    if(finger_params == NULL) {
+        return;
+    }
     // Get parameters for basic operation
-    // Should be specified in handX.yaml
-    int finger_id;
-    if(!nh.getParam(param_prefix+"/finger_id", finger_id)) {
-        ROS_ERROR("Could not find finger id");
-        return;
-    }
-    finger_id_ = finger_id;
+    finger_id_ = finger_params->finger_id;
 
-    int devices;
-    if(!nh.getParam(param_prefix+"/devices", devices)) {
-        ROS_ERROR("Could not get number of devices");
-        return;
-    }
-    devices_ = devices;
+    devices_ = finger_params->devices;
 
-    std::string reg_addrs_str;
-    if(!nh.getParam(param_prefix+"/reg_addrs_str", reg_addrs_str)) {
-        ROS_ERROR("Could not get register adresses");
-        return;
-    }
+    std::string reg_addrs_str(finger_params->reg_addrs);
     std::vector<std::string> reg_addrs_toks = split_string(reg_addrs_str, ' ');
     reg_addrs_.clear();
     for(unsigned int i = 0; i < reg_addrs_toks.size(); i++) {
         if(i >= MAX_REGISTERS) {
-            ROS_INFO("Can only add %d registers, the rest will not be added", MAX_REGISTERS);
+            std::cout << "[optical_weiss_finger] Can only add " << MAX_REGISTERS << " registers, the rest will not be added" << std::endl;
             break;
         }
         reg_addrs_.push_back((uint16_t) hex_str_to_val(reg_addrs_toks[i]));
     }
     if(reg_addrs_.size() <= 0) {
-        ROS_ERROR("Did not receive any register addresses, abort");
+        std::cout << "[optical_weiss_finger] Did not receive any register addresses, abort" << std::endl;
         return;
     }
 
-    std::string reg_lengths_str;
-    if(!nh.getParam(param_prefix+"/reg_lengths_str", reg_lengths_str)) {
-        ROS_ERROR("Could not get register lengths");
-        return;
-    }
+    std::string reg_lengths_str(finger_params->reg_lengths);
     std::vector<std::string> reg_lengths_toks = split_string(reg_lengths_str, ' ');
     reg_lengths_.clear();
     for(unsigned int i = 0; i < reg_lengths_toks.size(); i++) {
         if(i >= MAX_REGISTERS) {
-            ROS_INFO("Can only add %d registers, the rest will not be added", MAX_REGISTERS);
+            std::cout << "[optical_weiss_finger] Can only add MAX_REGISTERS registers, the rest will not be added" << std::endl;
             break;
         }
         reg_lengths_.push_back((uint8_t) hex_str_to_val(reg_lengths_toks[i]));
         if(reg_lengths_[i] > 4) {
-            ROS_WARN("Register lengths greater than 4 can cause overflow");
+            std::cout << "[optical_weiss_finger] Register lengths greater than 4 can cause overflow" << std::endl;
         }
     }
     if(reg_lengths_.size() <= 0) {
-        ROS_ERROR("Did not receive any register lengths, abort");
+        std::cout << "[optical_weiss_finger] Did not receive any register lengths, abort" << std::endl;
         return;
     }
 
     if(reg_addrs_.size() != reg_lengths_.size()) {
-        ROS_ERROR("Unequal amount of register adresesses and lengths given, abort");
+        std::cout << "[optical_weiss_finger] Unequal amount of register adresesses and lengths given, abort" << std::endl;
         return;
     }
 
-    if(!nh.getParam(param_prefix+"/finger_read_rate", finger_read_rate_)) {
-        ROS_ERROR("Did not receive finger read rate");
-        return;
-    }
-
-    if(!nh.getParam(param_prefix+"/data_buff_max_size", data_buff_max_size_)) {
-        ROS_ERROR("Did not receive max data buffer size");
-        return;
-    }
+    finger_read_rate_ = finger_params->finger_read_rate;
+    finger_data_buffer_size_ = finger_params->finger_data_buffer_size;
 
     initialized_ = true;
 
-    bool publish = false;
-    if(!nh.getParam(param_prefix+"/publish", publish)) {
-        ROS_WARN("Did not get publish param, will not publish");
-    }
-    if(publish) {
-      pub_topic_ = param_prefix + "/finger"+std::to_string(finger_id_);
-    }
-
-    if(!nh.getParam(param_prefix+"/sensor_to_surface_mm", sensor_to_surface_mm_)) {
-        ROS_ERROR("Did not receive sensor_to_surface_mm");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/target_surface_offset_mm", target_surface_offset_mm_)) {
-        ROS_ERROR("Did not receive target_surface_offset_mm");
-        return;
-    }
-
-    // Get parameters for performing calibration
-    if(!nh.getParam(param_prefix+"/calibration_path", calibration_path_)) {
-        ROS_ERROR("Did not receive calibration path");
-        return;
-    }
-
-    if(!nh.getParam(param_prefix+"/calib_see_through_samples", calib_see_through_samples_)) {
-        ROS_ERROR("Did not receive calib_see_through_samples");
-        return;
-    }
-
-    if(!nh.getParam(param_prefix+"/calib_see_through_target", calib_see_through_target_)) {
-        ROS_ERROR("Did not receive calib_see_through_target");
-        return;
-    }
-
-    if(!nh.getParam(param_prefix+"/calib_offset_samples", calib_offset_samples_)) {
-        ROS_ERROR("Did not receive calib_offset_samples");
-        return;
-    }
-
-    if(!nh.getParam(param_prefix+"/calib_offset_target", calib_offset_target_)) {
-        ROS_ERROR("Did not receive calib_offset_target");
-        return;
-    }
-
-    if(!nh.getParam(param_prefix+"/calib_cross_talk_samples", calib_cross_talk_samples_)) {
-        ROS_ERROR("Did not receive calib_cross_talk_samples");
-        return;
-    }
-
-    if(!nh.getParam(param_prefix+"/calib_cross_talk_target", calib_cross_talk_target_)) {
-        ROS_ERROR("Did not receive calib_cross_talk_target");
-        return;
-    }
+    // Get calibration related params
+    sensor_to_surface_mm_ = finger_params->sensor_to_surface_mm;
+    target_surface_offset_mm_ = finger_params->target_surface_offset_mm;
+    calibration_path_ = finger_params->calibration_path;
+    calib_see_through_samples_ = finger_params->calib_see_through_samples;
+    calib_see_through_target_ = finger_params->calib_see_through_target;
+    calib_offset_samples_ = finger_params->calib_offset_samples;
+    calib_offset_target_ = finger_params->calib_offset_target;
+    calib_cross_talk_samples_ = finger_params->calib_cross_talk_samples;
+    calib_cross_talk_target_ = finger_params->calib_cross_talk_target;
 
     can_calibrate_ = true;
 
@@ -196,11 +133,11 @@ OpticalWeissFinger::~OpticalWeissFinger() {
 */
 bool OpticalWeissFinger::do_calibration(std::mutex* cmd_mutex) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, abort");
+        std::cout << "[optical_weiss_finger] Not properly initialized, abort" << std::endl;
         return false;
     }
     if(!can_calibrate_) {
-        ROS_ERROR("Cannot perform calibration, some params were not provided");
+        std::cout << "[optical_weiss_finger] Cannot perform calibration, some params were not provided" << std::endl;
         return false;
     }
 
@@ -216,11 +153,11 @@ bool OpticalWeissFinger::do_calibration(std::mutex* cmd_mutex) {
                                      sensor_to_surface_mm_, target_surface_offset_mm_, &offset_target_width,
                                      payload, &payload_length);
 
-    ROS_INFO("Prepare target for offset calibration and press enter to continue");
+    std::cout << "[optical_weiss_finger] Prepare target for offset calibration and press enter to continue" << std::endl;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(),'\n');
     OpticalWeissFinger::move_hand(*cmd_mutex, offset_target_width); // Move the hand to the expected position
-    ros::Duration(2.0).sleep();
-    ROS_INFO("Beginning offset calibration...");
+    sleep(2);
+    std::cout << "[optical_weiss_finger] Beginning offset calibration..." << std::endl;
     {
         // Initiate data collection for offset calibration
         std::lock_guard<std::mutex> cmd_lock(*cmd_mutex);
@@ -236,17 +173,16 @@ bool OpticalWeissFinger::do_calibration(std::mutex* cmd_mutex) {
         std::lock_guard<std::mutex> cmd_lock(*cmd_mutex);
         cmd_submit(OpticalWeissFinger::FINGER_CMD_ID, payload, payload_length, true, &offset_resp, &offset_resp_len);
     }
-    ROS_INFO("offset resp length: %d", offset_resp_len);
 
     // Get the cross talk calibration command
     double cross_talk_target_width;
     OpticalWeissFinger::calib_cross_talk(finger_id_, calib_cross_talk_samples_, calib_cross_talk_target_,
                                          sensor_to_surface_mm_, target_surface_offset_mm_, &cross_talk_target_width,
                                          payload, &payload_length);
-    ROS_INFO("Prepare target for cross talk calibration and press enter to continue");
+    std::cout << "[optical_weiss_finger] Prepare target for cross talk calibration and press enter to continue" << std::endl;
     OpticalWeissFinger::move_hand(*cmd_mutex, cross_talk_target_width); // Move the hand to the expected distance
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(),'\n');
-    ROS_INFO("Beginning cross talk calibration...");
+    std::cout << "[optical_weiss_finger] Beginning cross talk calibration..." << std::endl;
     {
         // Initiate data collection for cross talk calibration
         std::lock_guard<std::mutex> cmd_lock(*cmd_mutex);
@@ -263,18 +199,16 @@ bool OpticalWeissFinger::do_calibration(std::mutex* cmd_mutex) {
         cmd_submit(OpticalWeissFinger::FINGER_CMD_ID, payload, payload_length, true, &cross_talk_resp, &cross_talk_resp_len);
     }
 
-    ROS_INFO("crosstalk resp length: %d", cross_talk_resp_len);
-
     // Get the see through calibration command
     double see_through_target_width;
     OpticalWeissFinger::calib_see_through(finger_id_, calib_see_through_samples_, calib_see_through_target_,
                                           sensor_to_surface_mm_, target_surface_offset_mm_, &see_through_target_width,
                                           payload, &payload_length);
-    ROS_INFO("Prepare target for see through calibration and press enter to continue");
+    std::cout << "[optical_weiss_finger] Prepare target for see through calibration and press enter to continue" << std::endl;
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(),'\n');
     OpticalWeissFinger::move_hand(*cmd_mutex, see_through_target_width); // Move the hand to the expected distance
-    ros::Duration(2.0).sleep();
-    ROS_INFO("Beginning see through calibration...");
+    sleep(2.0);
+    std::cout << "[optical_weiss_finger] Beginning see through calibration..." << std::endl;
     {
         // Initiate data collection for see through calibration
         std::lock_guard<std::mutex> cmd_lock(*cmd_mutex);
@@ -290,11 +224,9 @@ bool OpticalWeissFinger::do_calibration(std::mutex* cmd_mutex) {
         std::lock_guard<std::mutex> cmd_lock(*cmd_mutex);
         cmd_submit(OpticalWeissFinger::FINGER_CMD_ID, payload, payload_length, true, &see_through_resp, &see_through_resp_len);
     }
-    ROS_INFO("see through resp length: %d", see_through_resp_len);
 
-    ROS_INFO("About to save data...");
     OpticalWeissFinger::save_cal_data(calibration_path_, devices_, see_through_resp, offset_resp, cross_talk_resp);
-    ROS_INFO("...calibration complete");
+    std::cout << "[optical_weiss_finger] ...calibration complete" << std::endl;
 
     return true;
 
@@ -307,7 +239,7 @@ bool OpticalWeissFinger::do_calibration(std::mutex* cmd_mutex) {
 */
 bool OpticalWeissFinger::load_calibration(std::mutex* cmd_mutex) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, abort");
+        std::cout << "[optical_weiss_finger] Not properly initialized, abort" << std::endl;
         return false;
     }
 
@@ -339,15 +271,14 @@ bool OpticalWeissFinger::load_calibration(std::mutex* cmd_mutex) {
         // Verify that the returned data is the same as what was expected
         bool cal_correct = true;
         if(resp_len != expected_resp_length) {
-            ROS_ERROR("Verify calibration failed, expected %d bytes, got %d", expected_resp_length, resp_len);
+            std::cout << "[optical_weiss_finger] Verify calibration failed, expected " << expected_resp_length << " bytes, got " << resp_len << std::endl;
             cal_correct= false;
         } else {
-            ROS_INFO("Checking calibration data...");
 
             for(unsigned int i = 0; i < resp_len; i++) {
                 if(resp[i] != expected_resp[i]) {
                     cal_correct = false;
-                    std::cout << "\n Expected " << (int) expected_resp[i] <<", got " << (int) resp[i] << '\n';
+                    std::cout << std::endl << "[optical_weiss_finger] Expected " << (int) expected_resp[i] <<", got " << (int) resp[i] << std::endl;
                 } else {
                     std::cout << (int) resp[i] << ' ';
                 }
@@ -356,14 +287,14 @@ bool OpticalWeissFinger::load_calibration(std::mutex* cmd_mutex) {
         }
 
         if(cal_correct) {
-            ROS_INFO("...calibration verified as correct");
+            std::cout << "[optical_weiss_finger] ...calibration verified as correct" << std::endl;
         } else {
-            ROS_ERROR("...calibration is invalid, will not continue any operations");
+            std::cout << "[optical_weiss_finger] ...calibration is invalid, will not continue any operations" << std::endl;
             initialized_ = false;
             return false;
         }
     } else {
-        ROS_ERROR("Loading calibration data failed, will not continue any operations");
+        std::cout << "[optical_weiss_finger] Loading calibration data failed, will not continue any operations" << std::endl;
         initialized_ = false;
         return false;
     }
@@ -376,17 +307,11 @@ bool OpticalWeissFinger::load_calibration(std::mutex* cmd_mutex) {
  * @param cmd_mutex: Must acquire this mutex before communicating with hand
 */
 void OpticalWeissFinger::read_finger(std::mutex* cmd_mutex) {
-    ROS_INFO("Finger %d read thread started", finger_id_);
 
     unsigned char read_payload[256]; // Will hold command to read from the optical sensor
     uint8_t read_payload_length;
     unsigned char* resp; // Will hold data returned from optical sensor
     unsigned int resp_len;
-
-    ros::Publisher data_pub;
-    if(pub_topic_.length() > 0) {
-      data_pub  = nh_.advertise<wsg_50_common::WeissFingerData>(pub_topic_, 1);
-    }
 
     // Construct command to read from optical sensor
     OpticalWeissFinger::read_reg(finger_id_, devices_, reg_lengths_, read_payload, &read_payload_length);
@@ -394,15 +319,18 @@ void OpticalWeissFinger::read_finger(std::mutex* cmd_mutex) {
     // Lock for mutex, doesn't yet acquire mutex
     std::unique_lock<std::mutex> cmd_lock(*cmd_mutex, std::defer_lock);
     paused_ = false;
-    ros::Rate read_rate(finger_read_rate_);
-    while(ros::ok() && read_finger_alive_)  {
+    double finger_read_period = 1.0/finger_read_rate_;
+
+    while(read_finger_alive_)  {
+        timespec start = weiss_finger_data_t::get_stamp();
         if(!paused_) { // Check whether we are paused
+
             // Try to get the lock
             cmd_lock.try_lock();
             if(!cmd_lock.owns_lock()) {
                 continue;
             }
-            ros::Time sample_time = ros::Time::now();
+            timespec sample_time = weiss_finger_data_t::get_stamp();
 
             // Get the data
             cmd_submit(OpticalWeissFinger::FINGER_CMD_ID, read_payload, read_payload_length, true, &resp, &resp_len);
@@ -410,24 +338,22 @@ void OpticalWeissFinger::read_finger(std::mutex* cmd_mutex) {
 
             // Check for correct data reception, if successful push data into buffer
             if(resp_len < 2) {
-                 ROS_ERROR("Did not receive response from gripper");
+                 std::cout << "[optical_weiss_finger] Did not receive response from gripper" << std::endl;
             } else {
-                 wsg_50_common::WeissFingerData wfd = OpticalWeissFinger::cmd_response_to_msg(resp, resp_len, devices_, reg_lengths_, sample_time);
+                 weiss_finger_data_t wfd = OpticalWeissFinger::cmd_response_to_msg(resp, resp_len, devices_, reg_lengths_, &sample_time);
                 std::lock_guard<std::mutex> buffer_lock(data_buffer_mutex_); // Will be released upon losing scope
                 data_buff_.push_front(wfd);
-                while(data_buff_.size() > data_buff_max_size_) {
+                while(data_buff_.size() > finger_data_buffer_size_) {
                     data_buff_.pop_back();
                 }
 
-                if(data_pub) {
-                    /*for(unsigned int i = 0; i < wfd.data_shape[0]; i++) {
-                      wfd.data[i*wfd.data_shape[1]+0] = remove_finger_measurement_offset(wfd.data[i*wfd.data_shape[1]+0]);
-                    }*/
-                    data_pub.publish(wfd);
-                }
             }
         }
-        read_rate.sleep();
+        timespec end = weiss_finger_data_t::get_stamp();
+        long int sleep_length_us = (long int) (1000000 * finger_read_period - ((end.tv_sec + end.tv_nsec/1000000000.0) - (start.tv_sec + start.tv_nsec/1000000000.0)));
+        if(sleep_length_us > 0) {
+            usleep(sleep_length_us);
+        }
     }
 
 }
@@ -439,12 +365,12 @@ void OpticalWeissFinger::read_finger(std::mutex* cmd_mutex) {
 */
 bool OpticalWeissFinger::start_reading(std::mutex* cmd_mutex) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, abort");
+        std::cout << "[optical_weiss_finger] Not properly initialized, abort" << std::endl;
         return false;
     }
 
     if(read_finger_alive_ || read_finger_thread_) {
-        ROS_ERROR("Already reading...");
+        std::cout << "[optical_weiss_finger] Already reading finger data..." << std::endl;
         return false;
     }
 
@@ -480,7 +406,7 @@ bool OpticalWeissFinger::start_reading(std::mutex* cmd_mutex) {
 */
 bool OpticalWeissFinger::pause_reading() {
   if(!initialized_) {
-      ROS_ERROR("Not properly initialized, abort");
+      std::cout << "[optical_weiss_finger] Not properly initialized, abort" << std::endl;
       return false;
   }
   paused_ = true;
@@ -494,11 +420,11 @@ bool OpticalWeissFinger::pause_reading() {
 */
 bool OpticalWeissFinger::restart_reading() {
   if(!initialized_) {
-      ROS_ERROR("Not properly initialized, abort");
+      std::cout << "[optical_weiss_finger] Not properly initialized, abort" << std::endl;
       return false;
   }
   if(!read_finger_alive_) {
-    ROS_ERROR("Optical Weiss finger not restarted, start_reading was never called");
+    std::cout << "[optical_weiss_finger] Optical Weiss finger not restarted, start_reading was never called" << std::endl;
     return false;
   }
   paused_ = false;
@@ -511,7 +437,7 @@ bool OpticalWeissFinger::restart_reading() {
 */
 bool OpticalWeissFinger::clear_sample_buffer() {
   if(!initialized_) {
-      ROS_ERROR("Not properly initialized, abort");
+      std::cout << "[optical_weiss_finger] Not properly initialized, abort" << std::endl;
       return false;
   }
   std::lock_guard<std::mutex> buffer_lock(data_buffer_mutex_); // Will be released upon losing scope
@@ -523,17 +449,17 @@ bool OpticalWeissFinger::clear_sample_buffer() {
  * @brief get_sample: Get the latest data sample
  * @return The latest data sample
 */
-wsg_50_common::WeissFingerData OpticalWeissFinger::get_sample() {
+WeissFinger::weiss_finger_data_t OpticalWeissFinger::get_sample() {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, abort");
-        return wsg_50_common::WeissFingerData();
+        std::cout << "[optical_weiss_finger] Not properly initialized, abort" << std::endl;
+        return weiss_finger_data_t();
     }
     std::lock_guard<std::mutex> buffer_lock(data_buffer_mutex_); // Will be released upon losing scope
     if(data_buff_.size() <= 0) {
-        ROS_ERROR("Finger data buffer is empty");
-        return wsg_50_common::WeissFingerData();
+        std::cout << "[optical_weiss_finger] Finger data buffer is empty" << std::endl;
+        return weiss_finger_data_t();
     }
-    wsg_50_common::WeissFingerData result = data_buff_[0]; // Get most recent sample
+    weiss_finger_data_t result = data_buff_[0]; // Get most recent sample
     return result;
 }
 
@@ -543,14 +469,14 @@ wsg_50_common::WeissFingerData OpticalWeissFinger::get_sample() {
  * @param buff: Container for the n samples
  * @return True if at least one sample was returned, otherwise False
 */
-bool OpticalWeissFinger::get_latest_samples(unsigned int n_msgs, std::vector<wsg_50_common::WeissFingerData>& buff) {
+bool OpticalWeissFinger::get_latest_samples(unsigned int n_msgs, std::vector<weiss_finger_data_t> &buff) {
   if(!initialized_) {
-      ROS_ERROR("Not properly initialized, abort");
+      std::cout << "[optical_weiss_finger] Not properly initialized, abort" << std::endl;
       return false;
   }
   std::lock_guard<std::mutex> buffer_lock(data_buffer_mutex_); // Will be released upon losing scope
   if(data_buff_.size() <= 0) {
-      ROS_ERROR("Finger data buffer is empty");
+      std::cout << "[optical_weiss_finger] Finger data buffer is empty" << std::endl;
       return false;
   }
 
@@ -561,7 +487,7 @@ bool OpticalWeissFinger::get_latest_samples(unsigned int n_msgs, std::vector<wsg
 
   // Decrease n_msgs if too many messages requested
   if(n_msgs > data_buff_.size()) {
-    ROS_WARN("Requested %u messages, but only returning %lu latest", n_msgs, data_buff_.size());
+    std::cout << "[optical_weiss_finger] Requested " << n_msgs << " messages, but only returning " << data_buff_.size() << " latest" << std::endl;
     n_msgs = data_buff_.size();
   }
 
@@ -830,7 +756,7 @@ bool OpticalWeissFinger::save_cal_data(std::string path,
                                        unsigned char* offset_result,
                                        unsigned char* cross_talk_result) {
     if(!see_through_result || !offset_result || !cross_talk_result) {
-        ROS_ERROR("Must provide all calibration data");
+        std::cout << "[optical_weiss_finger] Must provide all calibration data" << std::endl;
         return false;
     }
     // Store calibration data
@@ -838,22 +764,21 @@ bool OpticalWeissFinger::save_cal_data(std::string path,
     std::ofstream cal_file;
     cal_file.open(path);
     for(unsigned int i = 0; i < devices; i++) {
-        ROS_INFO("Dev %d, val %d, writing see through msb",i, see_through_result[3+2*i]);
+        // Writing see through msb
         cal_file << hex_val_to_str(see_through_result[3+2*i]);
-        ROS_INFO("Wrote msb");
         cal_file << ',';
-        ROS_INFO("Dev %d,val %d, writing see through lsb",i,see_through_result[3+2*i+1]);
+        // Writing see through lsb
         cal_file << hex_val_to_str(see_through_result[3+2*i+1]);
         cal_file << ',';
 
-        ROS_INFO("Dev %d,val %d, writing offset",i,offset_result[3+2*i+1]);
+        // Writing offset
         cal_file << hex_val_to_str(offset_result[3+2*i+1]);
         cal_file << ',';
 
-        ROS_INFO("Dev %d,val %d, writing crosstalk lsb",i,cross_talk_result[3+2*i]);
+        // Writing crosstalk lsb
         cal_file << hex_val_to_str(cross_talk_result[3+2*i]);
         cal_file << ',';
-        ROS_INFO("Dev %d,val %d, writing cross talk msb",i,cross_talk_result[3+2*i+1]);
+        // Writing cross talk msb
         cal_file << hex_val_to_str(cross_talk_result[3+2*i+1]);
         cal_file << '\n';
     }
@@ -871,7 +796,7 @@ bool OpticalWeissFinger::open_cal_data(std::string path, std::vector<std::vector
     std::ifstream cal_file;
     cal_file.open(path);
     if(!cal_file) {
-        ROS_ERROR("Could not open cal file: %s", path.c_str());
+        std::cout << "Could not open cal file: " <<  path.c_str() << std::endl;
         return false;
     }
 
@@ -914,7 +839,7 @@ bool OpticalWeissFinger::load_cal_data(std::string path,
     std::vector<std::vector<unsigned char> > calib_data;
     // Get the data from disk
     if(!open_cal_data(path, calib_data)) {
-        ROS_ERROR("Could not load calibration data");
+        std::cout << "Could not load calibration data" << std::endl;
         return false;
     }
     unsigned char char_payload[64];
@@ -974,7 +899,7 @@ bool OpticalWeissFinger::verify_cal_data(std::string path,
     // Read the calibration data from disk
     std::vector<std::vector<unsigned char> > calib_data;
     if(!open_cal_data(path, calib_data)) {
-        ROS_ERROR("Could not load calibration data");
+        std::cout << "Could not load calibration data" << std::endl;
         return false;
     }
 
@@ -1012,18 +937,22 @@ bool OpticalWeissFinger::verify_cal_data(std::string path,
  * @param stamp: The stamp to use for the returned message, defaults to the time at which function was called
  * @return Message with data read from the hand
 */
-wsg_50_common::WeissFingerData OpticalWeissFinger::cmd_response_to_msg(unsigned char* resp, unsigned int resp_len,
-                                                                       unsigned int devices, std::vector<uint8_t>& reg_lengths,
-                                                                       ros::Time stamp) {
-    wsg_50_common::WeissFingerData result;
-    result.stamp = stamp;
+WeissFinger::weiss_finger_data_t OpticalWeissFinger::cmd_response_to_msg(unsigned char* resp, unsigned int resp_len,
+                                                                         unsigned int devices, std::vector<uint8_t>& reg_lengths,
+                                                                         timespec* stamp) {
+    timespec now_stamp = weiss_finger_data_t::get_stamp();
+    if(stamp == NULL) {
+        stamp = &now_stamp;
+    }
+    weiss_finger_data_t result;
+    result.stamp = *stamp;
 
     // Compute the number of bytes per device
     unsigned int total_reg_len = 0;
     for(unsigned int i = 0; i < reg_lengths.size(); i++) {
         total_reg_len += reg_lengths[i];
         if(reg_lengths[i] > 4) {
-            ROS_ERROR("cmd_response_to_msg will have unpredictable results for reg lengths greater than 4");
+            // cmd_response_to_msg will have unpredictable results for reg lengths greater than 4
             return result;
         }
     }
@@ -1031,7 +960,6 @@ wsg_50_common::WeissFingerData OpticalWeissFinger::cmd_response_to_msg(unsigned 
     // Verify that the correct amount of data was received
     unsigned int exp_length = 3+(total_reg_len)*devices;
     if(resp_len != exp_length) {
-        ROS_ERROR("Expected %d bytes, got %d", exp_length, resp_len);
         return result;
     }
 
@@ -1090,10 +1018,10 @@ bool OpticalWeissFinger::move_hand(std::mutex& cmd_mutex, double width, unsigned
         std::lock_guard<std::mutex> cmd_lock(cmd_mutex);
         res =  move(width, speed, false);
     }else if (width < 0.0 || width > 110.0){
-        ROS_ERROR("Imposible to move to this position. (Width values: [0.0 - 110.0] ");
+        std::cout << "[optical_weiss_finger] Imposible to move to this position. (Width values: [0.0 - 110.0] " << std::endl;
         return false;
     }else{
-        ROS_WARN("Speed values are outside the gripper's physical limits ([0.1 - 420.0])  Using clamped values.");
+        std::cout << "[optical_weiss_finger[ Speed values are outside the gripper's physical limits ([0.1 - 420.0])  Using clamped values." << std::endl;
         std::lock_guard<std::mutex> cmd_lock(cmd_mutex);
         res = move(width, speed, false);
     }
@@ -1135,7 +1063,7 @@ unsigned int hex_str_to_val(std::string str) {
         } else if(str[i] >= '0' && str[i] <= '9'){
             char_val = str[i]-'0';
         } else {
-            ROS_ERROR("Recevied non-hex char");
+            std::cout << "[optical_weiss_finger] Recevied non-hex char" << std::endl;
         }
         result += (char_val << 4*(str.size()-1-i));
     }
@@ -1161,23 +1089,11 @@ std::string hex_val_to_str(unsigned int val) {
         } else if(lsb <= 15) {
             lsb += 'a'-10;
         } else {
-            ROS_ERROR("Error in hex_val_to_str: %d", lsb);
+            std::cout << "Error in hex_val_to_str: " << lsb << std::endl;
         }
         result += lsb;
         val = val >> 4;
     }
     std::reverse(result.begin(), result.end());
     return result;
-}
-
-int main(int argc, char** argv) {
-
-    ros::init(argc, argv, "optical_weiss_finger");
-    ros::NodeHandle nh;
-
-    unsigned int in_val = 168;
-    std::string out_val = hex_val_to_str(in_val);
-
-    ROS_INFO("In val: %d, out_val: %s", in_val, out_val.c_str());
-
 }

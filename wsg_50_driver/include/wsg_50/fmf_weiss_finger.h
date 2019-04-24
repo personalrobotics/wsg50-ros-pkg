@@ -7,22 +7,27 @@
 #include <thread>
 #include <deque>
 #include "wsg_50/weiss_finger.h"
-#include "ros/ros.h"
-
-// The default movement speed in mm/sec
-#define DEFAULT_MOVE_SPEED_MM_PER_SEC 30
 
 /**
  * @brief The FMFWeissFinger class
 */
 class FMFWeissFinger: public WeissFinger {
 public:
+
+    /**
+     * @brief Parameters for initializing an FMF Weiss Finger
+    */
+    struct fmf_weiss_finger_params_t: WeissFinger::weiss_finger_params_t{
+        std::string calibration_path; // The file location of the calibration file
+        int calib_samples; // The number of samples to take during see through calibration
+        int calib_target; // The target distance during see through calibration
+    };
+
     /**
      * @brief FMFWeissFinger: Constructor
-     * @param nh: Node handle for grabbing params
-     * @param param_prefix: Prefix for param keys
+     * @param finger_params: Struct containing finger initialization params
     */
-    FMFWeissFinger(ros::NodeHandle& nh, std::string param_prefix);
+    FMFWeissFinger(fmf_weiss_finger_params_t* finger_params);
 
     /**
      * @brief ~FMFWeissFinger: Destructor
@@ -74,7 +79,7 @@ public:
      * @brief get_sample: Get the latest data sample
      * @return The latest data sample
     */
-    wsg_50_common::WeissFingerData get_sample();
+    weiss_finger_data_t get_sample();
 
     /**
      * @brief get_latest_samples: Get the most recent n samples, ordered from newest to oldest
@@ -82,15 +87,18 @@ public:
      * @param buff: Container for the n samples
      * @return True if at least one sample was returned, otherwise False
     */
-    bool get_latest_samples(unsigned int n_msgs, std::vector<wsg_50_common::WeissFingerData>& buff);
+    bool get_latest_samples(unsigned int n_msgs, std::vector<weiss_finger_data_t>& buff);
 
 private:
+    // The default movement speed in mm/sec
+    static const int DEFAULT_MOVE_SPEED_MM_PER_SEC = 30;
+
     static const int FINGER0_READ_CMD = 0x63; // Command to read data from Weiss finger 0 (non-generic finger only)
     static const int FINGER1_READ_CMD = 0x73; // Command to read data from Weiss finger 1 (non-generic finger only)
 
     bool initialized_; // Status flag, indicates if object has been initialized
     bool can_calibrate_; // Status flag, indicates if object is able to perform calibration
-    std::deque<wsg_50_common::WeissFingerData> data_buff_; // Contains the most recent data samples
+    std::deque<weiss_finger_data_t> data_buff_; // Contains the most recent data samples
     std::mutex data_buffer_mutex_; // Mutex that controls access to data_buff_
     std::thread* read_finger_thread_; // Thread for reading data from the finger
     bool read_finger_alive_; // Once thread has started, will shutdown if this is false
@@ -100,7 +108,7 @@ private:
     // Parameters read in from hand.yaml
     unsigned int finger_id_; // The id of this finger. Should be 0 or 1
     double finger_read_rate_; // The rate at which data from the finger should be read
-    int data_buff_max_size_; // The maximum size of the data buffer
+    int finger_data_buffer_size_; // The maximum size of the data buffer
     std::string calibration_path_; // The file to load/save calibration data from/to
     int calib_samples_; // The number of samples to collect when performing calibration
     double calib_target_; // The calibration target

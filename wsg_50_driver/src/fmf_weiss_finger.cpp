@@ -5,13 +5,16 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <cmath>
+#include <cfloat>
+#include <unistd.h>
+#include <ctime>
 
 /**
  * @brief FMFWeissFinger: Constructor
- * @param nh: Node handle for grabbing params
- * @param param_prefix: Prefix for param keys
+ * @param finger_params: Struct containing finger initialization params
 */
-FMFWeissFinger::FMFWeissFinger(ros::NodeHandle &nh, std::string param_prefix):
+FMFWeissFinger::FMFWeissFinger(fmf_weiss_finger_params_t *finger_params):
                                                                                 initialized_(false),
                                                                                 can_calibrate_(false),
                                                                                 data_buff_(0),
@@ -19,46 +22,30 @@ FMFWeissFinger::FMFWeissFinger(ros::NodeHandle &nh, std::string param_prefix):
                                                                                 read_finger_alive_(false),
                                                                                 paused_(true),
                                                                                 force_offset_(0.0){
-    // Get parameters for basic operation
-    // Should be specified in handX.yaml
-    int finger_id;
-    if(!nh.getParam(param_prefix+"/finger_id", finger_id)) {
-        ROS_ERROR("Did not receive finger id, abort");
+    // Abort if no parameters were provided
+    if(finger_params == NULL) {
         return;
     }
-    finger_id_ = finger_id;
 
+    // Get parameters for basic operation
+    finger_id_ = finger_params->finger_id;
+    finger_data_buffer_size_ = finger_params->finger_data_buffer_size;
+    finger_read_rate_ = finger_params->finger_read_rate;
+
+    // Finger id must be 0 or 1
     if(finger_id_ > 2 || finger_id_ < 0) {
-        ROS_ERROR("Finger id must be 0 or 1, abort");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/finger_read_rate", finger_read_rate_)) {
-        ROS_ERROR("Did not receive finger read rate, abort");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/data_buff_max_size", data_buff_max_size_)) {
-        ROS_ERROR("Did not receive max buffer size");
         return;
     }
 
     initialized_ = true;
 
     // Get parameters for performing calibration
-    if(!nh.getParam(param_prefix+"/calibration_path", calibration_path_)) {
-        ROS_WARN("Did not receive calibration path, cannot calibrate");
-        return;
-    }
+    calibration_path_ = finger_params->calibration_path;
+    calib_samples_ = finger_params->calib_samples;
+    calib_target_ = finger_params->calib_target;
 
-    if(!nh.getParam(param_prefix+"/calib_samples", calib_samples_)) {
-        ROS_WARN("Did not receive the number of calibration samples to perform, cannot calibrate");
-        return;
-    }
+    // Number of samples must be greater than 0
     if(calib_samples_ < 0) {
-        ROS_WARN("Number of samples must be greater than 0");
-        return;
-    }
-    if(!nh.getParam(param_prefix+"/calib_target", calib_target_)) {
-        ROS_WARN("Did not receive the calibration target, cannot calibrate");
         return;
     }
 
@@ -110,7 +97,7 @@ bool FMFWeissFinger::get_data(std::mutex& cmd_mutex, std::vector<double>& data) 
     } else if(finger_id_ == 1) {
         cmd = FINGER1_READ_CMD;
     } else {
-        ROS_ERROR("Cannot get data, finger id out of range");
+        std::cout << "[fmf_weiss_finger] Cannot get data, finger id out of range" << std::endl;
         return false;
     }
     {
@@ -119,7 +106,7 @@ bool FMFWeissFinger::get_data(std::mutex& cmd_mutex, std::vector<double>& data) 
     }
 
     if(resp_len < 2) {
-        ROS_ERROR("Did not receive response from gripper");
+        std::cout << "[fmf_weiss_finger] Did not receive response from gripper" << std::endl;
         return false;
     } else {
         data.clear();
@@ -141,38 +128,44 @@ bool FMFWeissFinger::get_data(std::mutex& cmd_mutex, std::vector<double>& data) 
 */
 bool FMFWeissFinger::do_calibration(std::mutex* cmd_mutex) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, abort");
+        std::cout << "[fmf_weiss_finger] Not properly initialized, abort" << std::endl;
         return false;
     }
     if(!can_calibrate_) {
-        ROS_ERROR("Did not receive all parameters necessary for calibration, abort");
+        std::cout << "[fmf_weiss_finger] Did not receive all parameters necessary for calibration, abort" << std::endl;
         return false;
     }
 
     // Move the hand to some non-zero target so no force is applied
     if(!FMFWeissFinger::move_hand(*cmd_mutex, calib_target_)) {
-        ROS_ERROR("Could not move hand, aborting calibration");
+        std::cout << "[fmf_weiss_finger] Could not move hand, aborting calibration" << std::endl;
         return false;
     }
 
-    ros::Duration(0.5).sleep();
+    sleep(1);
 
-    ROS_INFO("Collecting calibration data");
+    std::cout << "[fmf_weiss_finger] Collecting calibration data" << std::endl;
     force_offset_ = 0.0;
     std::vector<double> data;
-    ros::Rate sample_rate(finger_read_rate_);
+    double finger_read_period = 1.0/finger_read_rate_;
     unsigned int sample_count = 0;
-    while(sample_count < calib_samples_ && ros::ok()) {
+    while(sample_count < calib_samples_) {
+        timespec start = weiss_finger_data_t::get_stamp();
+
         if(get_data(*cmd_mutex, data)) {
             force_offset_ += data[0];
             sample_count += 1;
         }
 
-        sample_rate.sleep();
+        timespec end = weiss_finger_data_t::get_stamp();
+        long int sleep_length_us = (long int) (1000000 * finger_read_period - ((end.tv_sec + end.tv_nsec/1000000000.0) - (start.tv_sec + start.tv_nsec/1000000000.0)));
+        if(sleep_length_us > 0) {
+            usleep(sleep_length_us);
+        }
     }
     force_offset_ = -1*force_offset_ / sample_count; // Compute the offset
 
-    ROS_INFO("FORCE OFFSET: %f", force_offset_);
+    std::cout << "[fmf_weiss_finger] FORCE OFFSET: " << force_offset_;
 
     // Write the calibration result to file
     std::ofstream cal_file;
@@ -191,7 +184,7 @@ bool FMFWeissFinger::do_calibration(std::mutex* cmd_mutex) {
 */
 bool FMFWeissFinger::load_calibration(std::mutex* cmd_mutex) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, abort");
+        std::cout << "[fmf_weiss_finger] Not properly initialized, abort" << std::endl;
         return false;
     }
 
@@ -199,7 +192,7 @@ bool FMFWeissFinger::load_calibration(std::mutex* cmd_mutex) {
     std::ifstream cal_file;
     cal_file.open(calibration_path_);
     if(!cal_file) {
-        ROS_ERROR("Could not open cal file: %s", calibration_path_.c_str());
+        std::cout << "[fmf_weiss_finger] Could not open cal file: " << calibration_path_.c_str() << std::endl;
         return false;
     }
 
@@ -221,7 +214,6 @@ bool FMFWeissFinger::load_calibration(std::mutex* cmd_mutex) {
 */
 void FMFWeissFinger::read_finger(std::mutex* cmd_mutex) {
 
-    ros::Rate read_rate(finger_read_rate_);
     paused_ = false;
 
     // Get the command to send to finger for reading
@@ -231,13 +223,16 @@ void FMFWeissFinger::read_finger(std::mutex* cmd_mutex) {
     } else if(finger_id_ == 1) {
         cmd = FINGER1_READ_CMD;
     } else {
-        ROS_ERROR("Cannot get data, finger id out of range");
+        std::cout << "[fmf_weiss_finger] Cannot get data, finger id out of range" << std::endl;
         return;
     }
 
+    double finger_read_period = 1.0/finger_read_rate_;
+
     // Lock for mutex, doesn't yet acquire mutex
     std::unique_lock<std::mutex> cmd_lock(*cmd_mutex, std::defer_lock);
-    while(ros::ok() && read_finger_alive_) {
+    while(read_finger_alive_) {
+        timespec start = weiss_finger_data_t::get_stamp();
         if(!paused_) { // Check whether we are paused
             // Try to get the lock
             cmd_lock.try_lock();
@@ -246,8 +241,8 @@ void FMFWeissFinger::read_finger(std::mutex* cmd_mutex) {
             }
 
             // Create message to store result
-            wsg_50_common::WeissFingerData wfd;
-            wfd.stamp = ros::Time::now();
+            weiss_finger_data_t wfd;
+            wfd.stamp = weiss_finger_data_t::get_stamp();
 
             // Read from the hand
             unsigned char* resp;
@@ -257,7 +252,7 @@ void FMFWeissFinger::read_finger(std::mutex* cmd_mutex) {
 
             // Push result into message
             if(resp_len < 2) {
-                ROS_ERROR("Did not receive response from gripper");
+                std::cout << "[fmf_weiss_finger] Did not receive response from gripper" << std::endl;
                 continue;
             } else {
                 wfd.data.clear();
@@ -266,7 +261,7 @@ void FMFWeissFinger::read_finger(std::mutex* cmd_mutex) {
 
             // Check if data is in bounds
             if(std::isnan(wfd.data[0]) || wfd.data[0] > 1000.0) {
-                ROS_ERROR("Data out of bounds");
+                std::cout << "[fmf_weiss_finger] Data out of bounds" << std::endl;
                 continue;
             }
 
@@ -278,12 +273,16 @@ void FMFWeissFinger::read_finger(std::mutex* cmd_mutex) {
             // Push message into the buffer
             std::lock_guard<std::mutex> buffer_lock(data_buffer_mutex_); // Mutex will be released upon losing scope
             data_buff_.push_front(wfd);
-            while(data_buff_.size() > data_buff_max_size_) { // Remove old messages from buffer
+            while(data_buff_.size() > finger_data_buffer_size_) { // Remove old messages from buffer
                data_buff_.pop_back();
             }
 
         }
-        read_rate.sleep();
+        timespec end = weiss_finger_data_t::get_stamp();
+        long int sleep_length_us = (long int) (1000000 * finger_read_period - ((end.tv_sec + end.tv_nsec/1000000000.0) - (start.tv_sec + start.tv_nsec/1000000000.0)));
+        if(sleep_length_us > 0) {
+            usleep(sleep_length_us);
+        }
     }
 }
 
@@ -294,12 +293,12 @@ void FMFWeissFinger::read_finger(std::mutex* cmd_mutex) {
 */
 bool FMFWeissFinger::start_reading(std::mutex* cmd_mutex) {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, abort");
+        std::cout << "[fmf_weiss_finger] Not properly initialized, abort" << std::endl;
         return false;
     }
 
     if(read_finger_alive_ || read_finger_thread_) {
-        ROS_ERROR("Already reading...");
+        std::cout << "[fmf_weiss_finger] Already reading from finger..." << std::endl;
         return false;
     }
 
@@ -317,7 +316,7 @@ bool FMFWeissFinger::start_reading(std::mutex* cmd_mutex) {
 bool FMFWeissFinger::pause_reading() {
 
   if(!initialized_) {
-    ROS_ERROR("Not properly initialized, aborting pause");
+    std::cout << "[fmf_weiss_finger] Not properly initialized, abort" << std::endl;
     return false;
   }
   paused_ = true;
@@ -332,12 +331,12 @@ bool FMFWeissFinger::pause_reading() {
 bool FMFWeissFinger::restart_reading() {
 
   if(!initialized_) {
-    ROS_ERROR("Not properly initialized, aborting restart reading");
+    std::cout << "[fmf_weiss_finger] Not properly initialized, abort" << std::endl;
     return false;
   }
 
   if(!read_finger_alive_) {
-    ROS_ERROR("FMF Finger not started, call start_reading first");
+    std::cout << "[fmf_weiss_finger] FMF Finger not started, call start_reading first" << std::endl;
     return false;
   }
 
@@ -353,7 +352,7 @@ bool FMFWeissFinger::clear_sample_buffer() {
 
 
   if(!initialized_) {
-    ROS_ERROR("Not properly initialized, aborting restart reading");
+    std::cout << "[fmf_weiss_finger] Not properly initialized, abort" << std::endl;
     return false;
   }
   std::lock_guard<std::mutex> buffer_lock(data_buffer_mutex_); // Mutex will be released upon losing scope
@@ -366,17 +365,17 @@ bool FMFWeissFinger::clear_sample_buffer() {
  * @brief get_sample: Get the latest data sample
  * @return The latest data sample
 */
-wsg_50_common::WeissFingerData FMFWeissFinger::get_sample() {
+WeissFinger::weiss_finger_data_t FMFWeissFinger::get_sample() {
     if(!initialized_) {
-        ROS_ERROR("Not properly initialized, abort");
-        return wsg_50_common::WeissFingerData();
+        std::cout << "[fmf_weiss_finger] Not properly initialized, abort" << std::endl;
+        return weiss_finger_data_t();
     }
     if(data_buff_.size() <= 0) {
-        ROS_ERROR("Finger data buffer is empty");
-        return wsg_50_common::WeissFingerData();
+        std::cout << "[fmf_weiss_finger] Finger data buffer is empty" << std::endl;
+        return weiss_finger_data_t();
     }
     std::lock_guard<std::mutex> buffer_lock(data_buffer_mutex_); // Mutex will be released upon losing scope
-    wsg_50_common::WeissFingerData result = data_buff_[0];
+    weiss_finger_data_t result = data_buff_[0];
     return result;
 }
 
@@ -386,16 +385,16 @@ wsg_50_common::WeissFingerData FMFWeissFinger::get_sample() {
  * @param buff: Container for the n samples
  * @return True if at least one sample was returned, otherwise False
 */
-bool FMFWeissFinger::get_latest_samples(unsigned int n_msgs, std::vector<wsg_50_common::WeissFingerData>& buff) {
+bool FMFWeissFinger::get_latest_samples(unsigned int n_msgs, std::vector<weiss_finger_data_t> &buff) {
 
   if(!initialized_) {
-    ROS_ERROR("Not properly intialized, abort");
+    std::cout << "[fmf_weiss_finger] Not properly initialized, abort" << std::endl;
     return false;
   }
 
   std::lock_guard<std::mutex> buffer_lock(data_buffer_mutex_); // Mutex will be released upon losing scope
   if(data_buff_.size() <= 0) {
-    ROS_ERROR("Finger data buffer is empty");
+    std::cout << "[fmf_weiss_finger] Finger data buffer is empty" << std::endl;
     return false;
   }
 
@@ -406,7 +405,7 @@ bool FMFWeissFinger::get_latest_samples(unsigned int n_msgs, std::vector<wsg_50_
 
   // Decrease n_msgs if too many messages requested
   if(n_msgs > data_buff_.size()) {
-    ROS_WARN("Requested %u messages, but only returning %lu latest", n_msgs, data_buff_.size());
+    std::cout << "[fmf_weiss_finger] Requested " << n_msgs << " messages, but only returning " << data_buff_.size() << " latest" << std::endl;
     n_msgs = data_buff_.size();
   }
 
@@ -431,10 +430,10 @@ bool FMFWeissFinger::move_hand(std::mutex& cmd_mutex, double width, unsigned int
         std::lock_guard<std::mutex> cmd_lock(cmd_mutex); // Mutex will be released upon losing scope
         res =  move(width, speed, false);
     }else if (width < 0.0 || width > 110.0){
-        ROS_ERROR("Imposible to move to this position. (Width values: [0.0 - 110.0] ");
+        std::cout << "[fmf_weiss_finger] Imposible to move to this position. (Width values: [0.0 - 110.0] " << std::endl;
         return false;
     }else{
-        ROS_WARN("Speed values are outside the gripper's physical limits ([0.1 - 420.0])  Using clamped values.");
+        std::cout << "[fmf_weiss_finger] Speed values are outside the gripper's physical limits ([0.1 - 420.0])  Using clamped values." << std::endl;
         std::lock_guard<std::mutex> cmd_lock(cmd_mutex); // Mutex will be released upon losing scope
         res = move(width, speed, false);
     }
