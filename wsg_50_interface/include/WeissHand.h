@@ -4,7 +4,7 @@
 // ros_control
 #include <hardware_interface/joint_command_interface.h>
 #include <hardware_interface/joint_state_interface.h>
-#include <pr_ros_controllers/joint_mode_interface.h>
+//#include <pr_ros_controllers/joint_mode_interface.h>
 #include <pr_hardware_interfaces/PositionCommandInterface.h>
 
 //#include <hardware_interface/controller_info_interface.h>
@@ -25,12 +25,12 @@
 
 using namespace std;
 
-static const int num_hand_dof = 1;
+static const int num_hand_dof = 2;
 
 class WeissHand: public hardware_interface::RobotHW
 {
 public:
-      WeissHand(ros::NodeHandle nh);
+      WeissHand(ros::NodeHandle nh, std::string prefix);
 
       virtual ~WeissHand();
 
@@ -52,7 +52,7 @@ private:
       hardware_interface::EffortJointInterface jnt_eff_interface;
       hardware_interface::VelocityJointInterface jnt_vel_interface;
       hardware_interface::PositionJointInterface jnt_pos_interface;
-      hardware_interface::JointModeInterface jm_interface;
+      //hardware_interface::JointModeInterface jm_interface;
 
       pr_hardware_interfaces::MoveState movehand_state;
 

@@ -57,8 +57,10 @@ int main(int argc, char** argv) {
 
     ROS_INFO("Reading hand params...");
 
+    std::string param_prefix("left/hand");
+
     Hand::hand_params_t hand_params;
-    if(!read_hand_params(nh, "hand0", hand_params)) {
+    if(!read_hand_params(nh, param_prefix, hand_params)) {
         return -1;
     }
 

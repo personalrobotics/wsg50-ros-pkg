@@ -189,8 +189,10 @@ int main(int argc, char** argv) {
 
     ros::NodeHandle nh;
 
+    std::string param_prefix("left/hand");
+
     Hand::hand_params_t hand_params;
-    if(!read_hand_params(nh, "hand0", hand_params)) {
+    if(!read_hand_params(nh, param_prefix, hand_params)) {
         return -1;
     }
 
@@ -200,12 +202,12 @@ int main(int argc, char** argv) {
     // Read the finger parameters
     if(hand_params.finger0_type.compare("optical") == 0) {
         finger0_params = new OpticalWeissFinger::optical_weiss_finger_params_t();
-        if(!read_optical_finger_params(nh, "hand0/finger0", (OpticalWeissFinger::optical_weiss_finger_params_t*)finger0_params)) {
+        if(!read_optical_finger_params(nh, param_prefix+"/finger0", (OpticalWeissFinger::optical_weiss_finger_params_t*)finger0_params)) {
             return -1;
         }
     } else if(hand_params.finger0_type.compare("fmf") == 0) {
         finger0_params = new FMFWeissFinger::fmf_weiss_finger_params_t();
-        if(!read_fmf_finger_params(nh, "hand0/finger0", (FMFWeissFinger::fmf_weiss_finger_params_t*)finger0_params)) {
+        if(!read_fmf_finger_params(nh, param_prefix+"/finger0", (FMFWeissFinger::fmf_weiss_finger_params_t*)finger0_params)) {
             return -1;
         }
     } else if(hand_params.finger0_type.compare("dsa") == 0) {
@@ -217,12 +219,12 @@ int main(int argc, char** argv) {
 
     if(hand_params.finger1_type.compare("optical") == 0) {
         finger1_params = new OpticalWeissFinger::optical_weiss_finger_params_t();
-        if(!read_optical_finger_params(nh, "hand0/finger1", (OpticalWeissFinger::optical_weiss_finger_params_t*)finger1_params)) {
+        if(!read_optical_finger_params(nh, param_prefix+"/finger1", (OpticalWeissFinger::optical_weiss_finger_params_t*)finger1_params)) {
             return -1;
         }
     } else if(hand_params.finger1_type.compare("fmf") == 0) {
         finger1_params = new FMFWeissFinger::fmf_weiss_finger_params_t();
-        if(!read_fmf_finger_params(nh, "hand0/finger1", (FMFWeissFinger::fmf_weiss_finger_params_t*)finger1_params)) {
+        if(!read_fmf_finger_params(nh, param_prefix+"/finger1", (FMFWeissFinger::fmf_weiss_finger_params_t*)finger1_params)) {
             return -1;
         }
     } else if(hand_params.finger1_type.compare("dsa") == 0) {

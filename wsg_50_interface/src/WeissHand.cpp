@@ -48,11 +48,10 @@ bool read_hand_params(ros::NodeHandle& nh, std::string param_prefix, Hand::hand_
     return true;
 }
 
-WeissHand::WeissHand(ros::NodeHandle nh)
+WeissHand::WeissHand(ros::NodeHandle nh, std::string prefix)
 : movehand_state(pr_hardware_interfaces::IDLE)
 {
-  ROS_INFO("Starting to initialize jaco_hardware");
-  int i;
+
   cmd_pos.resize(num_hand_dof);
   cmd_vel.resize(num_hand_dof);
   cmd_eff.resize(num_hand_dof);
@@ -63,20 +62,26 @@ WeissHand::WeissHand(ros::NodeHandle nh)
 
   // connect and register the joint state interface.
   // this gives joint states (pos, vel, eff) back as an output.
-  hardware_interface::JointStateHandle state_handle("wsg_50_joint_1", &pos[0], &vel[0], &eff[0]);
-  jnt_state_interface.registerHandle(state_handle);
+  hardware_interface::JointStateHandle left_state_handle(prefix+"/base_to_left_finger_mount", &pos[0], &vel[0], &eff[0]);
+  hardware_interface::JointStateHandle right_state_handle(prefix+"/base_to_right_finger_mount", &pos[1], &vel[1], &eff[1]);
+  jnt_state_interface.registerHandle(left_state_handle);
+  jnt_state_interface.registerHandle(right_state_handle);
   registerInterface(&jnt_state_interface);
 
   // connect and register the joint position interface
   // this takes joint velocities in as a command.
-  hardware_interface::JointHandle vel_handle(jnt_state_interface.getHandle("wsg_50_joint_1"), &cmd_vel[0]);
-  jnt_vel_interface.registerHandle(vel_handle);
+  hardware_interface::JointHandle left_vel_handle(jnt_state_interface.getHandle(prefix+"/base_to_left_finger_mount"), &cmd_vel[0]);
+  hardware_interface::JointHandle right_vel_handle(jnt_state_interface.getHandle(prefix+"/base_to_right_finger_mount"), &cmd_vel[1]);  
+  jnt_vel_interface.registerHandle(left_vel_handle);
+  jnt_vel_interface.registerHandle(right_vel_handle);  
   registerInterface(&jnt_vel_interface);
 
   // connect and register the joint position interface
   // this takes joint positions in as a command.
-  hardware_interface::JointHandle pos_handle(jnt_state_interface.getHandle("wsg_50_joint_1"), &cmd_pos[0]);
-  jnt_pos_interface.registerHandle(pos_handle);
+  hardware_interface::JointHandle left_pos_handle(jnt_state_interface.getHandle(prefix+"/base_to_left_finger_mount"), &cmd_pos[0]);
+  hardware_interface::JointHandle right_pos_handle(jnt_state_interface.getHandle(prefix+"/base_to_right_finger_mount"), &cmd_pos[1]);  
+  jnt_pos_interface.registerHandle(left_pos_handle);
+  jnt_pos_interface.registerHandle(right_pos_handle);  
   registerInterface(&jnt_pos_interface);
 
   // TODO: Do we really need this?
@@ -85,26 +90,39 @@ WeissHand::WeissHand(ros::NodeHandle nh)
 
   // connect and register the joint position interface
   // this takes joint effort in as a command.
-  hardware_interface::JointHandle eff_handle(jnt_state_interface.getHandle("wsg_50_joint_1"), &cmd_eff[0]);
-  jnt_eff_interface.registerHandle(eff_handle);
+  hardware_interface::JointHandle left_eff_handle(jnt_state_interface.getHandle(prefix+"/base_to_left_finger_mount"), &cmd_eff[0]);
+  hardware_interface::JointHandle right_eff_handle(jnt_state_interface.getHandle(prefix+"/base_to_right_finger_mount"), &cmd_eff[1]);  
+  jnt_eff_interface.registerHandle(left_eff_handle);
+  jnt_eff_interface.registerHandle(right_eff_handle);  
   registerInterface(&jnt_eff_interface);
 
   // connect and register the joint mode interface
   // this is needed to determine if velocity or position control is needed.
-  hardware_interface::JointModeHandle mode_handle("joint_mode", &joint_mode);
-  jm_interface.registerHandle(mode_handle);
+  //hardware_interface::JointModeHandle mode_handle("joint_mode", &joint_mode);
+  //jm_interface.registerHandle(mode_handle);
 
-  registerInterface(&jm_interface);
+  //registerInterface(&jm_interface);
 
   // Start up Patrick's root API.
   Hand::hand_params_t hand_params;
-  read_hand_params(nh, "hand0", hand_params);
+  read_hand_params(nh, prefix+"/hand", hand_params);
 
   WeissFinger::weiss_finger_params_t* finger0_params = NULL;
 	WeissFinger::weiss_finger_params_t* finger1_params = NULL;
 
   hand = std::make_shared<Hand>(&hand_params, finger0_params, finger1_params);
 	hand->start_reading();
+
+  ros::Duration(1).sleep();
+  Hand::hand_data_t hand_status = hand->get_hand_state();
+  cmd_pos[0] = -1.0*hand_status.width/2000.0;
+  cmd_vel[0] = 0.0;
+  cmd_eff[0] = 0.0;
+  
+  cmd_pos[1] = -1.0*hand_status.width/2000.0;
+  cmd_vel[1] = 0.0;
+  cmd_eff[1] = 0.0;  
+
 }
 
 WeissHand::~WeissHand()
@@ -129,7 +147,7 @@ void WeissHand::sendPositionCommand(const std::vector<double>& command)
 
   // NOTE: Speed is hard-coded for now.
   double speed = 30.0;
-  hand->move_hand(command.at(0), speed);
+  hand->move_hand(-1000*(command.at(0)+command.at(1)), speed);
 }
 
 void WeissHand::sendVelocityCommand(const std::vector<double>& command)
@@ -153,10 +171,14 @@ void WeissHand::read(void)
     Hand::hand_data_t hand_status = hand->get_hand_state();
 
     // TODO: Seperate finger positions and other positions.
-    pos[0] = hand_status.width;
+    pos[0] = -1*hand_status.width/2000.0;
 
     vel[0] = hand_status.speed;
 
     // TODO: This should probably be renamed.
     eff[0] = hand_status.force;
+    
+    pos[1] = -1*hand_status.width/2000.0;
+    vel[1] = hand_status.speed;
+    eff[1] = hand_status.force;    
 }

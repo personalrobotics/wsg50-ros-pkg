@@ -10,8 +10,16 @@ int main(int argc, char* argv[])
     ros::init(argc, argv, "weiss_hardware");
     ros::NodeHandle nh;
 
+    ros::NodeHandle pnh("~");
+    
+    std::string prefix("");
+    if(!pnh.getParam("prefix",prefix)) {
+      ROS_ERROR("Could not get prefix param, abort");
+      return 1;
+    } 
+
     // TODO: How should params even be passed?
-    WeissHand robot(nh);
+    WeissHand robot(nh, prefix);
     controller_manager::ControllerManager cm(&robot);
 
     ros::AsyncSpinner spinner(1);
