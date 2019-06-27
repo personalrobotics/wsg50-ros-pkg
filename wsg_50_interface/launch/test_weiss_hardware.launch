@@ -1,0 +1,25 @@
+<!-- -*- mode: XML -*- -->
+<launch>
+
+  <arg name="prefix" default="" />
+
+  <arg name="control_config" default="$(find wsg_50_interface)/config/test_weiss_hardware.yaml" />
+  <rosparam file="$(arg control_config)" command="load" />
+
+  <node pkg="robot_state_publisher" type="robot_state_publisher" name="state_publisher"/>
+
+  <param name="robot_description"
+         textfile="$(find herb_description)/robots/wsg50.urdf"/>
+
+  <!-- load the controllers -->
+  <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+    output="screen"  args="/hand/joint_state_controller /hand/joint_position_controller"/>
+
+  <node pkg="wsg_50_interface" type="weiss_hardware" name="weiss_hardware" output="screen">
+    <param name="prefix" type="string" value="$(arg prefix)" />
+  </node>
+  
+  <node pkg="wsg_50_interface" type="test_weiss_hardware.py" name="test_weiss_hardware" output="screen"/> 
+
+</launch>
+
